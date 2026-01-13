@@ -20,6 +20,8 @@ const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb
 if (MONGODB_URI) {
   const maskedURI = MONGODB_URI.replace(/:[^:@]+@/, ':****@');
   console.log('Using MongoDB URI:', maskedURI);
+  console.log('URI Type:', MONGODB_URI.startsWith('mongodb+srv://') ? 'Atlas (SRV)' : 
+                              MONGODB_URI.startsWith('mongodb://') ? 'Standard' : 'Unknown');
 } else {
   console.error('✗ MongoDB URI가 설정되지 않았습니다!');
 }
@@ -30,10 +32,26 @@ let db;
 // MongoDB 연결 함수 (재시도 로직 포함)
 async function connectMongoDB(retryCount = 0, maxRetries = 3) {
   try {
-    if (!MONGODB_URI || MONGODB_URI === 'mongodb://localhost:27017/todo') {
+    // MongoDB URI 검증: 로컬 개발 환경이 아니고 유효한 URI 형식인지 확인
+    if (!MONGODB_URI || MONGODB_URI.trim() === '') {
       console.error('❌ MongoDB URI가 설정되지 않았습니다.');
       console.error('💡 Heroku에서 환경변수를 설정하세요:');
       console.error('   heroku config:set MONGO_URI="your-mongodb-connection-string"');
+      return false;
+    }
+    
+    // 로컬 개발 환경 체크 (mongodb://localhost로 시작하는 경우만 제외)
+    // mongodb+srv:// 또는 mongodb://로 시작하는 유효한 URI는 허용
+    if (MONGODB_URI.startsWith('mongodb://localhost') && process.env.NODE_ENV === 'production') {
+      console.error('❌ 프로덕션 환경에서는 로컬 MongoDB를 사용할 수 없습니다.');
+      console.error('💡 MongoDB Atlas 연결 문자열을 사용하세요.');
+      return false;
+    }
+    
+    // URI 형식 검증
+    if (!MONGODB_URI.startsWith('mongodb://') && !MONGODB_URI.startsWith('mongodb+srv://')) {
+      console.error('❌ 잘못된 MongoDB URI 형식입니다.');
+      console.error('💡 mongodb:// 또는 mongodb+srv://로 시작해야 합니다.');
       return false;
     }
     
