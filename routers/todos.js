@@ -10,13 +10,25 @@ const router = express.Router();
  */
 router.get('/', async (req, res) => {
   try {
-    // 데이터베이스 연결 확인
-    const db = req.app.locals.db;
+    // 데이터베이스 연결 확인 및 재연결 시도
+    let db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({
-        error: 'Database not connected',
-        message: '데이터베이스에 연결되지 않았습니다.'
-      });
+      // 연결이 없으면 재연결 시도
+      const ensureMongoConnection = req.app.locals.ensureMongoConnection;
+      if (ensureMongoConnection) {
+        db = await ensureMongoConnection();
+        if (!db) {
+          return res.status(503).json({
+            error: 'Database not connected',
+            message: '데이터베이스에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.'
+          });
+        }
+      } else {
+        return res.status(503).json({
+          error: 'Database not connected',
+          message: '데이터베이스에 연결되지 않았습니다.'
+        });
+      }
     }
 
     // 쿼리 파라미터 (선택적)
@@ -33,10 +45,36 @@ router.get('/', async (req, res) => {
     sortOption[sort] = order === 'asc' ? 1 : -1;
 
     // 할일 목록 조회
-    const todos = await db.collection('todos')
-      .find(filter)
-      .sort(sortOption)
-      .toArray();
+    let todos;
+    try {
+      todos = await db.collection('todos')
+        .find(filter)
+        .sort(sortOption)
+        .toArray();
+    } catch (dbError) {
+      // MongoDB 연결 에러인 경우 재연결 시도
+      if (dbError.name === 'MongoServerSelectionError' || dbError.name === 'MongoNetworkError') {
+        console.log('🔄 MongoDB 연결 에러 감지, 재연결 시도 중...');
+        // 재연결 시도
+        const ensureMongoConnection = req.app.locals.ensureMongoConnection;
+        if (ensureMongoConnection) {
+          const reconnectedDb = await ensureMongoConnection();
+          if (reconnectedDb) {
+            // 재연결 성공 시 다시 쿼리 실행
+            todos = await reconnectedDb.collection('todos')
+              .find(filter)
+              .sort(sortOption)
+              .toArray();
+          } else {
+            throw dbError;
+          }
+        } else {
+          throw dbError;
+        }
+      } else {
+        throw dbError;
+      }
+    }
 
     // 응답
     res.json({
@@ -46,6 +84,15 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('할일 목록 조회 오류:', error);
+    
+    // MongoDB 연결 에러인 경우 더 자세한 메시지
+    if (error.name === 'MongoServerSelectionError' || error.name === 'MongoNetworkError') {
+      return res.status(503).json({
+        error: 'Database connection error',
+        message: '데이터베이스 연결에 문제가 있습니다. 잠시 후 다시 시도해주세요.'
+      });
+    }
+    
     res.status(500).json({
       error: 'Internal server error',
       message: '할일 목록 조회 중 오류가 발생했습니다.'

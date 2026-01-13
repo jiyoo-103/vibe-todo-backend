@@ -29,6 +29,65 @@ if (MONGODB_URI) {
 let client;
 let db;
 
+// MongoDB 연결 확인 및 재연결 헬퍼 함수
+async function ensureMongoConnection() {
+  try {
+    // 연결이 있고 활성 상태인지 확인
+    if (client && db) {
+      try {
+        // 간단한 ping으로 연결 상태 확인
+        await client.db('admin').command({ ping: 1 });
+        return db;
+      } catch (pingError) {
+        // ping 실패 시 연결이 끊어진 것으로 간주
+        console.log('⚠️  MongoDB ping 실패, 연결이 끊어진 것으로 간주합니다.');
+        // 기존 연결 정리
+        try {
+          if (client) {
+            await client.close();
+          }
+        } catch (closeError) {
+          // 무시
+        }
+        client = null;
+        db = null;
+        app.locals.db = null;
+      }
+    }
+    
+    // 연결이 없거나 끊어진 경우 재연결 시도
+    console.log('🔄 MongoDB 연결이 끊어졌습니다. 재연결 시도 중...');
+    const connected = await connectMongoDB();
+    if (connected && db) {
+      return db;
+    }
+    
+    return null;
+  } catch (error) {
+    // 연결 에러 발생 시 재연결 시도
+    console.error('⚠️  MongoDB 연결 확인 중 에러:', error.message);
+    console.log('🔄 MongoDB 재연결 시도 중...');
+    
+    // 기존 연결 정리
+    try {
+      if (client) {
+        await client.close();
+      }
+    } catch (closeError) {
+      // 무시
+    }
+    client = null;
+    db = null;
+    app.locals.db = null;
+    
+    const connected = await connectMongoDB();
+    if (connected && db) {
+      return db;
+    }
+    return null;
+  }
+}
+
 // MongoDB 연결 함수 (재시도 로직 포함)
 // Heroku 타임아웃을 고려하여 재시도 횟수 감소
 async function connectMongoDB(retryCount = 0, maxRetries = 2) {
@@ -93,8 +152,9 @@ async function connectMongoDB(retryCount = 0, maxRetries = 2) {
     
     db = client.db(dbName);
     
-    // Express app에 db 객체 저장
+    // Express app에 db 객체와 연결 함수 저장
     app.locals.db = db;
+    app.locals.ensureMongoConnection = ensureMongoConnection;
     console.log(`✅ MongoDB 연결 성공 (데이터베이스: ${dbName})`);
     return true;
   } catch (error) {
