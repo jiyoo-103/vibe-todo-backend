@@ -37,7 +37,13 @@ async function connectMongoDB() {
       return false;
     }
     
-    client = new MongoClient(MONGODB_URI);
+    // MongoDB 연결 옵션 설정 (SSL/TLS 문제 해결)
+    const clientOptions = {
+      serverSelectionTimeoutMS: 5000, // 5초 타임아웃
+      connectTimeoutMS: 10000, // 10초 연결 타임아웃
+    };
+    
+    client = new MongoClient(MONGODB_URI, clientOptions);
     await client.connect();
     
     // URI에서 데이터베이스 이름 추출
