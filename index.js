@@ -170,6 +170,7 @@ app.get('/health', (req, res) => {
 
 // 라우터 등록
 app.use('/api/todos', todosRouter);
+app.use('/todo', todosRouter); // /todo 경로도 지원
 
 // 에러 핸들링 미들웨어 (모든 라우터 이후에 배치)
 app.use((err, req, res, next) => {
