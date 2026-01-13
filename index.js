@@ -30,7 +30,8 @@ let client;
 let db;
 
 // MongoDB 연결 함수 (재시도 로직 포함)
-async function connectMongoDB(retryCount = 0, maxRetries = 3) {
+// Heroku 타임아웃을 고려하여 재시도 횟수 감소
+async function connectMongoDB(retryCount = 0, maxRetries = 2) {
   try {
     // MongoDB URI 검증: 로컬 개발 환경이 아니고 유효한 URI 형식인지 확인
     if (!MONGODB_URI || MONGODB_URI.trim() === '') {
@@ -57,10 +58,11 @@ async function connectMongoDB(retryCount = 0, maxRetries = 3) {
     
     // MongoDB 연결 옵션 설정 (SSL/TLS 문제 해결 및 안정성 향상)
     // mongodb+srv:// URI는 자동으로 TLS를 사용하므로 명시적 설정 불필요
+    // Heroku 30초 타임아웃을 고려하여 타임아웃을 줄임
     const clientOptions = {
-      serverSelectionTimeoutMS: 30000, // 30초 타임아웃 (증가)
-      connectTimeoutMS: 30000, // 30초 연결 타임아웃 (증가)
-      socketTimeoutMS: 45000, // 소켓 타임아웃
+      serverSelectionTimeoutMS: 8000, // 8초 타임아웃 (Heroku 타임아웃 고려)
+      connectTimeoutMS: 8000, // 8초 연결 타임아웃
+      socketTimeoutMS: 30000, // 소켓 타임아웃
       maxPoolSize: 10, // 연결 풀 크기
       minPoolSize: 1,
       retryWrites: true, // 쓰기 재시도 활성화
@@ -98,9 +100,10 @@ async function connectMongoDB(retryCount = 0, maxRetries = 3) {
   } catch (error) {
     console.error(`❌ MongoDB 연결 실패 (시도 ${retryCount + 1}/${maxRetries + 1}):`, error.message);
     
-    // 재시도 로직
+    // 재시도 로직 (Heroku 타임아웃을 고려하여 짧게 조정)
+    // 최대 재시도 횟수를 줄이고 대기 시간을 단축
     if (retryCount < maxRetries) {
-      const waitTime = (retryCount + 1) * 2000; // 2초, 4초, 6초 대기
+      const waitTime = 500; // 0.5초 대기 (빠른 재시도)
       console.log(`⏳ ${waitTime / 1000}초 후 재시도...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       return connectMongoDB(retryCount + 1, maxRetries);
@@ -189,29 +192,35 @@ app.use((req, res) => {
 // 서버 시작 함수
 async function startServer() {
   try {
-    // MongoDB 연결 시도 (연결 실패해도 서버는 시작)
-    // 백그라운드에서 재연결 시도
-    const isConnected = await connectMongoDB();
-    
-    if (!isConnected) {
-      console.warn('⚠️  MongoDB 연결 실패 - 일부 기능이 제한될 수 있습니다.');
-      console.warn('⚠️  Heroku에서 MONGO_URI 환경변수를 확인하세요: heroku config:get MONGO_URI');
-      console.warn('⚠️  MongoDB Atlas Network Access 설정을 확인하세요.');
-      
-      // 백그라운드에서 주기적으로 재연결 시도 (5분마다)
-      setInterval(async () => {
-        if (!db) {
-          console.log('🔄 MongoDB 재연결 시도 중...');
-          await connectMongoDB();
-        }
-      }, 5 * 60 * 1000); // 5분
-    }
-    
-    // MongoDB 연결 여부와 관계없이 서버 시작 (Heroku 요구사항)
+    // Heroku 30초 타임아웃을 피하기 위해 서버를 먼저 시작
+    // MongoDB 연결은 백그라운드에서 처리
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✅ Server is running on port ${PORT}`);
-      console.log(`📊 MongoDB: ${isConnected ? 'Connected' : 'Disconnected'}`);
+      console.log(`📊 MongoDB: Connecting...`);
     });
+    
+    // 서버 시작 후 백그라운드에서 MongoDB 연결 시도
+    // Promise를 기다리지 않고 백그라운드에서 실행
+    connectMongoDB().then((isConnected) => {
+      if (isConnected) {
+        console.log(`✅ MongoDB 연결 완료`);
+      } else {
+        console.warn('⚠️  MongoDB 연결 실패 - 일부 기능이 제한될 수 있습니다.');
+        console.warn('⚠️  Heroku에서 MONGO_URI 환경변수를 확인하세요: heroku config:get MONGO_URI');
+        console.warn('⚠️  MongoDB Atlas Network Access 설정을 확인하세요.');
+        
+        // 백그라운드에서 주기적으로 재연결 시도 (5분마다)
+        setInterval(async () => {
+          if (!db) {
+            console.log('🔄 MongoDB 재연결 시도 중...');
+            await connectMongoDB();
+          }
+        }, 5 * 60 * 1000); // 5분
+      }
+    }).catch((error) => {
+      console.error('❌ MongoDB 연결 중 에러:', error);
+    });
+    
   } catch (error) {
     console.error('❌ 서버 시작 실패:', error);
     console.error('📋 에러 상세:', error.stack);
