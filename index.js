@@ -27,8 +27,8 @@ if (MONGODB_URI) {
 let client;
 let db;
 
-// MongoDB 연결 함수
-async function connectMongoDB() {
+// MongoDB 연결 함수 (재시도 로직 포함)
+async function connectMongoDB(retryCount = 0, maxRetries = 3) {
   try {
     if (!MONGODB_URI || MONGODB_URI === 'mongodb://localhost:27017/todo') {
       console.error('❌ MongoDB URI가 설정되지 않았습니다.');
@@ -37,14 +37,31 @@ async function connectMongoDB() {
       return false;
     }
     
-    // MongoDB 연결 옵션 설정 (SSL/TLS 문제 해결)
+    // MongoDB 연결 옵션 설정 (SSL/TLS 문제 해결 및 안정성 향상)
+    // mongodb+srv:// URI는 자동으로 TLS를 사용하므로 명시적 설정 불필요
     const clientOptions = {
-      serverSelectionTimeoutMS: 5000, // 5초 타임아웃
-      connectTimeoutMS: 10000, // 10초 연결 타임아웃
+      serverSelectionTimeoutMS: 30000, // 30초 타임아웃 (증가)
+      connectTimeoutMS: 30000, // 30초 연결 타임아웃 (증가)
+      socketTimeoutMS: 45000, // 소켓 타임아웃
+      maxPoolSize: 10, // 연결 풀 크기
+      minPoolSize: 1,
+      retryWrites: true, // 쓰기 재시도 활성화
+      retryReads: true, // 읽기 재시도 활성화
+      // Heartbeat 설정
+      heartbeatFrequencyMS: 10000,
+      // 서버 선택 설정
+      directConnection: false,
+      // 압축 설정 (성능 향상)
+      compressors: ['zlib'],
     };
+    
+    console.log(`🔄 MongoDB 연결 시도 중... (${retryCount + 1}/${maxRetries + 1})`);
     
     client = new MongoClient(MONGODB_URI, clientOptions);
     await client.connect();
+    
+    // 연결 테스트
+    await client.db('admin').command({ ping: 1 });
     
     // URI에서 데이터베이스 이름 추출
     // mongodb+srv://user:pass@cluster.mongodb.net/dbname 형식 처리
@@ -61,8 +78,21 @@ async function connectMongoDB() {
     console.log(`✅ MongoDB 연결 성공 (데이터베이스: ${dbName})`);
     return true;
   } catch (error) {
-    console.error('❌ MongoDB 연결 실패:', error.message);
+    console.error(`❌ MongoDB 연결 실패 (시도 ${retryCount + 1}/${maxRetries + 1}):`, error.message);
+    
+    // 재시도 로직
+    if (retryCount < maxRetries) {
+      const waitTime = (retryCount + 1) * 2000; // 2초, 4초, 6초 대기
+      console.log(`⏳ ${waitTime / 1000}초 후 재시도...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return connectMongoDB(retryCount + 1, maxRetries);
+    }
+    
     console.error('📋 전체 에러:', error);
+    console.error('💡 MongoDB Atlas Network Access 설정을 확인하세요:');
+    console.error('   1. MongoDB Atlas 대시보드 접속');
+    console.error('   2. Network Access → IP Access List');
+    console.error('   3. "Add IP Address" → "Allow Access from Anywhere" (0.0.0.0/0)');
     return false;
   }
 }
@@ -142,11 +172,21 @@ app.use((req, res) => {
 async function startServer() {
   try {
     // MongoDB 연결 시도 (연결 실패해도 서버는 시작)
+    // 백그라운드에서 재연결 시도
     const isConnected = await connectMongoDB();
     
     if (!isConnected) {
       console.warn('⚠️  MongoDB 연결 실패 - 일부 기능이 제한될 수 있습니다.');
       console.warn('⚠️  Heroku에서 MONGO_URI 환경변수를 확인하세요: heroku config:get MONGO_URI');
+      console.warn('⚠️  MongoDB Atlas Network Access 설정을 확인하세요.');
+      
+      // 백그라운드에서 주기적으로 재연결 시도 (5분마다)
+      setInterval(async () => {
+        if (!db) {
+          console.log('🔄 MongoDB 재연결 시도 중...');
+          await connectMongoDB();
+        }
+      }, 5 * 60 * 1000); // 5분
     }
     
     // MongoDB 연결 여부와 관계없이 서버 시작 (Heroku 요구사항)
