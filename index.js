@@ -30,19 +30,33 @@ let db;
 // MongoDB 연결 함수
 async function connectMongoDB() {
   try {
+    if (!MONGODB_URI || MONGODB_URI === 'mongodb://localhost:27017/todo') {
+      console.error('❌ MongoDB URI가 설정되지 않았습니다.');
+      console.error('💡 Heroku에서 환경변수를 설정하세요:');
+      console.error('   heroku config:set MONGO_URI="your-mongodb-connection-string"');
+      return false;
+    }
+    
     client = new MongoClient(MONGODB_URI);
     await client.connect();
     
-    // URI에서 데이터베이스 이름 추출하거나 기본값 사용
-    const dbName = MONGODB_URI.match(/\/([^\/\?]+)(\?|$)/)?.[1] || 'todo';
+    // URI에서 데이터베이스 이름 추출
+    // mongodb+srv://user:pass@cluster.mongodb.net/dbname 형식 처리
+    let dbName = 'todo'; // 기본값
+    const uriMatch = MONGODB_URI.match(/\/([^\/\?]+)(\?|$)/);
+    if (uriMatch && uriMatch[1] && uriMatch[1] !== '') {
+      dbName = uriMatch[1];
+    }
+    
     db = client.db(dbName);
     
     // Express app에 db 객체 저장
     app.locals.db = db;
-    console.log(`MongoDB 연결 성공 (데이터베이스: ${dbName})`);
+    console.log(`✅ MongoDB 연결 성공 (데이터베이스: ${dbName})`);
     return true;
   } catch (error) {
-    console.error('MongoDB 연결 실패:', error);
+    console.error('❌ MongoDB 연결 실패:', error.message);
+    console.error('📋 전체 에러:', error);
     return false;
   }
 }
@@ -84,6 +98,15 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Todo Backend API',
     status: 'running',
+    mongodb: db ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 헬스 체크 엔드포인트 (Heroku용)
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
     mongodb: db ? 'connected' : 'disconnected'
   });
 });
@@ -91,16 +114,43 @@ app.get('/', (req, res) => {
 // 라우터 등록
 app.use('/api/todos', todosRouter);
 
+// 에러 핸들링 미들웨어 (모든 라우터 이후에 배치)
+app.use((err, req, res, next) => {
+  console.error('❌ 에러 발생:', err);
+  res.status(err.status || 500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? '서버 오류가 발생했습니다.' : err.message,
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+  });
+});
+
+// 404 핸들러
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Not Found',
+    message: `경로를 찾을 수 없습니다: ${req.method} ${req.path}`
+  });
+});
+
 // 서버 시작 함수
 async function startServer() {
-  const isConnected = await connectMongoDB();
-  
-  if (isConnected) {
-    app.listen(PORT, () => {
-      console.log(`Server is running on http://localhost:${PORT}`);
+  try {
+    // MongoDB 연결 시도 (연결 실패해도 서버는 시작)
+    const isConnected = await connectMongoDB();
+    
+    if (!isConnected) {
+      console.warn('⚠️  MongoDB 연결 실패 - 일부 기능이 제한될 수 있습니다.');
+      console.warn('⚠️  Heroku에서 MONGO_URI 환경변수를 확인하세요: heroku config:get MONGO_URI');
+    }
+    
+    // MongoDB 연결 여부와 관계없이 서버 시작 (Heroku 요구사항)
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`✅ Server is running on port ${PORT}`);
+      console.log(`📊 MongoDB: ${isConnected ? 'Connected' : 'Disconnected'}`);
     });
-  } else {
-    console.error('MongoDB 연결 실패로 서버를 시작할 수 없습니다.');
+  } catch (error) {
+    console.error('❌ 서버 시작 실패:', error);
+    console.error('📋 에러 상세:', error.stack);
     process.exit(1);
   }
 }
